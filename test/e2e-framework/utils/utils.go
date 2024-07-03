@@ -50,6 +50,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+
+	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v4/apis/volumesnapshot/v1"
 )
 
 const (
@@ -131,6 +133,7 @@ func InitializeSchemes() {
 	if !schemesInitialized {
 		utilruntime.Must(clientgoscheme.AddToScheme(Scheme))
 		utilruntime.Must(repv1.AddToScheme(Scheme))
+		utilruntime.Must(snapshotv1.AddToScheme(Scheme))
 		schemesInitialized = true
 	}
 	// +kubebuilder:scaffold:scheme
@@ -330,6 +333,18 @@ func GetNonReplicationEnabledSC(provisionerName, scName string) *storagev1.Stora
 		Parameters:  map[string]string{},
 	}
 	return &scObj
+}
+
+// GetReplicationEnabledSC returns replication enabled StorageClass testing object
+func GetSnapshotClass(provisionerName, snapName string) *snapshotv1.VolumeSnapshotClass {
+	snObj := snapshotv1.VolumeSnapshotClass{
+		Driver:         provisionerName,
+		DeletionPolicy: "Retain",
+		ObjectMeta: metav1.ObjectMeta{
+			Name: snapName,
+		},
+	}
+	return &snObj
 }
 
 // GetRGObj returns DellCSIReplicationGroup testing object

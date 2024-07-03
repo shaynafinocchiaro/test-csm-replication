@@ -16,12 +16,14 @@ package replicationcontroller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	repv1 "github.com/dell/csm-replication/api/v1"
 	"github.com/dell/csm-replication/controllers"
+	csireplicator "github.com/dell/csm-replication/controllers/csi-replicator"
 	constants "github.com/dell/csm-replication/pkg/common"
 	"github.com/dell/csm-replication/pkg/config"
 	"github.com/dell/csm-replication/pkg/connection"
@@ -224,7 +226,9 @@ func (suite *RGControllerTestSuite) TestReconcileWithRemoteRGInvalidPGID() {
 	suite.NoError(err)
 	suite.createSCAndRG(suite.getTypicalSC(), suite.getRGWithoutSyncComplete(suite.driver.RGName, true, false))
 	req := suite.getTypicalRequest()
+
 	_, err = suite.reconciler.Reconcile(context.Background(), req)
+
 	suite.NoError(err) // Reconcile should stop
 	rgList, err := rClient.ListReplicationGroup(context.Background())
 	suite.NoError(err)
@@ -461,6 +465,105 @@ func (suite *RGControllerTestSuite) TestRGSyncDeletion() {
 	resp, err = suite.reconciler.Reconcile(context.Background(), req)
 	suite.NoError(err)
 	suite.Equal(false, resp.Requeue)
+}
+
+func (suite *RGControllerTestSuite) TestReconcileRGWithSnapshotAction() {
+	// scenario: RG without sync complete
+	newConfig := config.NewFakeConfigForSingleCluster(suite.client,
+		suite.driver.SourceClusterID, suite.driver.RemoteClusterID)
+	suite.config = newConfig
+	suite.reconciler.Config = newConfig
+
+	sc1 := utils.GetReplicationEnabledSC(suite.driver.DriverName, "sc-1",
+		"sc-2", utils.Self)
+	// create sc-1 and corresponding RG
+	rg1 := suite.getRGWithoutSyncComplete(suite.driver.RGName, true, true)
+	labels := make(map[string]string)
+	labels[controllers.DriverName] = suite.driver.DriverName
+	rg1.Labels = labels
+	suite.createSCAndRG(sc1, rg1)
+
+	// create sc-2
+	sc2 := utils.GetReplicationEnabledSC(suite.driver.DriverName, "sc-2",
+		"sc-1", utils.Self)
+	err := suite.client.Create(context.Background(), sc2)
+	suite.NoError(err)
+
+	// create snapshotclass
+	snapshotClass := utils.GetSnapshotClass(suite.driver.DriverName, "sn-class")
+	err = suite.client.Create(context.Background(), snapshotClass)
+	suite.NoError(err)
+
+	rg := new(repv1.DellCSIReplicationGroup)
+	req := suite.getTypicalRequest()
+
+	err = suite.client.Get(context.Background(), req.NamespacedName, rg)
+	suite.NoError(err)
+
+	suite.NotContains(controllers.RemoteReplicationGroup, rg.Annotations,
+		"Remote RG annotation doesn't exist")
+	suite.NotContains(controllers.RGSyncComplete, rg.Annotations,
+		"RG Sync annotation doesn't exist")
+
+	time := metav1.Now()
+	lastAction := repv1.LastAction{
+		Time:      &time,
+		Condition: "Action CREATE_SNAPSHOT succeeded",
+		ActionAttributes: map[string]string{
+			"vol1": "snap1",
+		},
+	}
+
+	// Set Action content
+	rg.Status = repv1.DellCSIReplicationGroupStatus{
+		LastAction: lastAction,
+		Conditions: []repv1.LastAction{lastAction},
+	}
+
+	rg.Annotations[controllers.ActionProcessedTime] = time.String()
+
+	actionAnnotation := csireplicator.ActionAnnotation{
+		ActionName:        "CREATE_SNAPSHOT",
+		SnapshotNamespace: "demo1",
+		SnapshotClass:     "sn-class",
+	}
+	actionString, err := json.Marshal(actionAnnotation)
+	suite.NoError(err)
+
+	rg.Annotations[csireplicator.Action] = string(actionString)
+
+	err = suite.client.Update(context.Background(), rg)
+	suite.NoError(err)
+
+	resp, err := suite.reconciler.Reconcile(context.Background(), req)
+	suite.NoError(err)
+	suite.Equal(false, resp.Requeue)
+	err = suite.client.Get(context.Background(), req.NamespacedName, rg)
+	suite.NoError(err)
+	suite.Equal("yes", rg.Annotations[controllers.RGSyncComplete],
+		"RG Sync annotation applied")
+	replicatedRGName := fmt.Sprintf("%s-%s", replicated, rg.Name)
+	suite.Equal(replicatedRGName, rg.Annotations[controllers.RemoteReplicationGroup],
+		"Remote RG annotation applied")
+
+	// Check if remote RG got created
+	rClient, err := suite.config.GetConnection("self")
+	suite.NoError(err)
+	_, err = rClient.GetReplicationGroup(context.Background(), replicatedRGName)
+	suite.NoError(err)
+
+	// Another reconcile
+	_, err = suite.reconciler.Reconcile(context.Background(), req)
+	suite.NoError(err)
+
+	// Reconcile the other RG
+	req.NamespacedName.Name = replicatedRGName
+	_, err = suite.reconciler.Reconcile(context.Background(), req)
+	suite.NoError(err)
+	replicatedRG, err := rClient.GetReplicationGroup(context.Background(), replicatedRGName)
+	suite.NoError(err)
+	suite.T().Log(replicatedRG.Annotations)
+	suite.T().Log(replicatedRG.Labels)
 }
 
 func TestRGControllerTestSuite(t *testing.T) {

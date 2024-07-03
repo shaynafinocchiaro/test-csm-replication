@@ -77,7 +77,7 @@ func (r *ReplicationGroupReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	log.V(common.InfoLevel).Info("Reconciling RG event!!!")
+	log.V(common.InfoLevel).Info("Hello Inters, Reconciling RG event!!!")
 	localRGName := req.Name
 	remoteRGName := localRG.Annotations[controller.RemoteReplicationGroup]
 	if remoteRGName == "" {
